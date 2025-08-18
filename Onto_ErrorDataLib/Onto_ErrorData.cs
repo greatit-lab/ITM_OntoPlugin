@@ -93,7 +93,7 @@ namespace Onto_ErrorDataLib
                 _logger.LogEvent($"[{Name}] No rows to upload after filtering for plg_error.");
             }
         }
-        
+
         #region --- Helper Methods (Parsing, DB, File IO) ---
 
         private Dictionary<string, string> ParseMetadata(string[] lines)
@@ -113,14 +113,14 @@ namespace Onto_ErrorDataLib
                 }
             }
 
-            if (meta.TryGetValue("DATE", out string dateStr) && 
+            if (meta.TryGetValue("DATE", out string dateStr) &&
                 DateTime.TryParseExact(dateStr, "M/d/yyyy H:m:s", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTime parsedDate))
             {
                 meta["DATE"] = parsedDate.ToString("yyyy-MM-dd HH:mm:ss");
             }
             return meta;
         }
-        
+
         private DataTable BuildInfoDataTable(Dictionary<string, string> meta)
         {
             var dt = new DataTable();
@@ -172,7 +172,7 @@ namespace Onto_ErrorDataLib
                 var dr = dt.NewRow();
                 dr["eqpid"] = eqpid;
                 dr["error_id"] = m.Groups["id"].Value.Trim();
-                
+
                 if (DateTime.TryParseExact(m.Groups["ts"].Value.Trim(), "dd-MMM-yy h:mm:ss tt", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTime parsedTs))
                 {
                     dr["time_stamp"] = parsedTs;
@@ -265,11 +265,11 @@ namespace Onto_ErrorDataLib
                     system_name = EXCLUDED.system_name, system_model = EXCLUDED.system_model, serial_num = EXCLUDED.serial_num,
                     application = EXCLUDED.application, version = EXCLUDED.version, db_version = EXCLUDED.db_version,
                     ""date"" = EXCLUDED.date, serv_ts = EXCLUDED.serv_ts;";
-            
+
             try
             {
-                 using (var conn = new NpgsqlConnection(connString))
-                 {
+                using (var conn = new NpgsqlConnection(connString))
+                {
                     conn.Open();
                     using (var cmd = new NpgsqlCommand(sql, conn))
                     {
@@ -284,7 +284,7 @@ namespace Onto_ErrorDataLib
                         cmd.Parameters.AddWithValue("@serv_ts", servTsWithoutMs);
                         cmd.ExecuteNonQuery();
                     }
-                 }
+                }
                 _logger.LogEvent($"[{Name}] itm_info table updated for eqpid: {row["eqpid"]}");
                 SimpleLogger.Event($"itm_info inserted/updated ▶ eqpid={row["eqpid"]}");
             }
@@ -294,7 +294,7 @@ namespace Onto_ErrorDataLib
                 SimpleLogger.Error($"DB FAIL (UploadItmInfo) ▶ {ex.ToString()}");
             }
         }
-        
+
         private bool IsInfoUnchanged(DataRow r)
         {
             string connString = DatabaseInfo.CreateDefault().GetConnectionString();
@@ -304,11 +304,11 @@ namespace Onto_ErrorDataLib
                   AND serial_num IS NOT DISTINCT FROM @snm AND application IS NOT DISTINCT FROM @app
                   AND version IS NOT DISTINCT FROM @ver AND db_version IS NOT DISTINCT FROM @dbv
                 LIMIT 1;";
-            
+
             try
             {
-                 using (var conn = new NpgsqlConnection(connString))
-                 {
+                using (var conn = new NpgsqlConnection(connString))
+                {
                     conn.Open();
                     using (var cmd = new NpgsqlCommand(sql, conn))
                     {
@@ -321,7 +321,7 @@ namespace Onto_ErrorDataLib
                         cmd.Parameters.AddWithValue("@dbv", r["db_version"] ?? DBNull.Value);
                         return cmd.ExecuteScalar() != null;
                     }
-                 }
+                }
             }
             catch { return false; }
         }
@@ -337,7 +337,7 @@ namespace Onto_ErrorDataLib
                     var allColumns = dt.Columns.Cast<DataColumn>().Select(c => c.ColumnName).ToArray();
                     string colList = string.Join(",", allColumns.Select(c => $"\"{c}\""));
                     string copyCommand = $"COPY public.{tableName} ({colList}) FROM STDIN (FORMAT BINARY)";
-                    
+
                     using (var writer = conn.BeginBinaryImport(copyCommand))
                     {
                         foreach (DataRow row in dt.Rows)
@@ -355,18 +355,18 @@ namespace Onto_ErrorDataLib
                 _logger.LogEvent($"[{Name}] Successfully uploaded {dt.Rows.Count} rows to {tableName}.");
                 SimpleLogger.Event($"DB OK ▶ {dt.Rows.Count} rows to {tableName}");
             }
-            catch(PostgresException pex) when (pex.SqlState == "23505")
+            catch (PostgresException pex) when (pex.SqlState == "23505")
             {
-                 _logger.LogEvent($"[{Name}] Skipping duplicate entries for {tableName}.");
-                 SimpleLogger.Event($"Duplicate entry skipped ▶ {tableName}");
+                _logger.LogEvent($"[{Name}] Skipping duplicate entries for {tableName}.");
+                SimpleLogger.Event($"Duplicate entry skipped ▶ {tableName}");
             }
             catch (Exception ex)
             {
-                 _logger.LogError($"[{Name}] DB upload failed for {tableName}: {ex.Message}");
-                 SimpleLogger.Error($"DB FAIL ({tableName}) ▶ {ex.ToString()}");
+                _logger.LogError($"[{Name}] DB upload failed for {tableName}: {ex.Message}");
+                SimpleLogger.Error($"DB FAIL ({tableName}) ▶ {ex.ToString()}");
             }
         }
-        
+
         private NpgsqlTypes.NpgsqlDbType GetNpgsqlDbType(Type type)
         {
             if (type == typeof(string)) return NpgsqlTypes.NpgsqlDbType.Varchar;
@@ -390,7 +390,7 @@ namespace Onto_ErrorDataLib
             }
             return false;
         }
-        
+
         private string ReadAllTextSafe(string path, Encoding enc, int timeoutMs = 30000)
         {
             var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -436,7 +436,7 @@ namespace Onto_ErrorDataLib
             if (_debugEnabled) Write("debug", msg);
         }
     }
-    
+
     public static class DictionaryExtensions
     {
         public static TValue GetValueOrDefault<TKey, TValue>(this IDictionary<TKey, TValue> dict, TKey key)
