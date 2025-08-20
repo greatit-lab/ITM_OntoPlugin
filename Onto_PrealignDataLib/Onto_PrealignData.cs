@@ -91,7 +91,7 @@ namespace Onto_PrealignDataLib
 
             var regex = new Regex(@"Xmm\s*([-\d.]+)\s*Ymm\s*([-\d.]+)\s*Notch\s*([-\d.]+)\s*Time\s*([\d\-:\s]+)", RegexOptions.IgnoreCase);
             var rows = new List<(decimal x, decimal y, decimal notch, DateTime timestamp)>();
-            
+
             _logger.LogDebug($"[{Name}] Parsing {lines.Length} lines with regex.");
             foreach (var line in lines)
             {
@@ -142,7 +142,7 @@ namespace Onto_PrealignDataLib
                 var servTsWithoutMs = new DateTime(kstTime.Year, kstTime.Month, kstTime.Day, kstTime.Hour, kstTime.Minute, kstTime.Second);
                 dt.Rows.Add(eqpid, row.timestamp, row.x, row.y, row.notch, servTsWithoutMs);
             }
-            
+
             _logger.LogDebug($"[{Name}] Built DataTable with {dt.Rows.Count} rows for DB upload.");
             UploadDataTable(dt, "plg_prealign");
         }
