@@ -103,7 +103,7 @@ namespace Onto_WaferFlatDataLib
                 _logger.LogEvent($"[{Name}] No valid data rows were parsed from '{Path.GetFileName(filePath)}'. Skipping DB upload.");
                 return;
             }
-             _logger.LogDebug($"[{Name}] Successfully parsed {rows.Count} data rows. Building DataTable.");
+            _logger.LogDebug($"[{Name}] Successfully parsed {rows.Count} data rows. Building DataTable.");
 
             var dataTable = BuildDataTable(rows, eqpid);
             UploadToDatabase(dataTable, Path.GetFileName(filePath));
@@ -190,7 +190,7 @@ namespace Onto_WaferFlatDataLib
                 var values = lines[i].Split(',').Select(v => v.Trim()).ToArray();
                 if (values.Length < headers.Count)
                 {
-                    _logger.LogDebug($"[{Name}] Skipping line {i+1} due to insufficient column count ({values.Length}/{headers.Count}).");
+                    _logger.LogDebug($"[{Name}] Skipping line {i + 1} due to insufficient column count ({values.Length}/{headers.Count}).");
                     continue;
                 }
 
@@ -293,7 +293,7 @@ namespace Onto_WaferFlatDataLib
                     try
                     {
                         int successCount = 0;
-                        for(int i = 0; i < dt.Rows.Count; i++)
+                        for (int i = 0; i < dt.Rows.Count; i++)
                         {
                             using (var cmd = new NpgsqlCommand(sql, conn, tx))
                             {
