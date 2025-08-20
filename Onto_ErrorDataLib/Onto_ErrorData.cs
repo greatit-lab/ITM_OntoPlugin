@@ -37,7 +37,11 @@ namespace Onto_ErrorDataLib
             {
                 Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
             }
-            catch (InvalidOperationException) { /* 이미 등록됨 */ }
+            catch (InvalidOperationException)
+            {
+                _logger.LogDebug($"[{Name}] CodePagesEncodingProvider is already registered.");
+            }
+            _logger.LogEvent($"[{Name}] Plugin initialized. Version: {Version}");
         }
 
         public void SetDebugMode(bool isEnabled)
@@ -47,11 +51,11 @@ namespace Onto_ErrorDataLib
 
         public void Execute(string filePath)
         {
-            _logger.LogEvent($"[{Name}] Processing file: {Path.GetFileName(filePath)}");
+            _logger.LogEvent($"[{Name}] Execute called for file: {Path.GetFileName(filePath)}");
 
             if (!WaitForFileReady(filePath, 20, 500))
             {
-                _logger.LogEvent($"[{Name}] SKIPPED (file locked): {Path.GetFileName(filePath)}");
+                _logger.LogEvent($"[{Name}] SKIPPED (file is locked): {Path.GetFileName(filePath)}");
                 return;
             }
 
@@ -61,7 +65,8 @@ namespace Onto_ErrorDataLib
             }
             catch (Exception ex)
             {
-                _logger.LogError($"[{Name}] Unhandled exception for {filePath}: {ex.Message}");
+                _logger.LogError($"[{Name}] An unhandled exception occurred while processing {Path.GetFileName(filePath)}: {ex.Message}");
+                _logger.LogDebug($"[{Name}] Unhandled Exception Details: {ex.ToString()}");
                 SimpleLogger.Error($"Unhandled EXCEPTION: {ex.ToString()}");
             }
         }
@@ -69,20 +74,33 @@ namespace Onto_ErrorDataLib
         private void ProcessFile(string filePath)
         {
             string eqpid = _settings.GetEqpid();
+            _logger.LogDebug($"[{Name}] Reading file content for: {Path.GetFileName(filePath)} with Eqpid: {eqpid}");
             string fileContent = ReadAllTextSafe(filePath, Encoding.GetEncoding(949));
+            if (string.IsNullOrEmpty(fileContent))
+            {
+                _logger.LogEvent($"[{Name}] File is empty, skipping processing: {Path.GetFileName(filePath)}");
+                return;
+            }
             var lines = fileContent.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
 
+            _logger.LogDebug($"[{Name}] Parsing metadata from {lines.Length} lines.");
             var meta = ParseMetadata(lines);
             if (!meta.ContainsKey("EqpId")) meta["EqpId"] = eqpid;
 
+            _logger.LogDebug($"[{Name}] Building and uploading itm_info table.");
             var infoTable = BuildInfoDataTable(meta);
             UploadItmInfo(infoTable);
 
+            _logger.LogDebug($"[{Name}] Building error data table.");
             var errorTable = BuildErrorDataTable(lines, eqpid);
+
+            _logger.LogDebug($"[{Name}] Loading allowed error IDs from database.");
             HashSet<string> allowedErrorIds = LoadAllowedErrorIds();
+
+            _logger.LogDebug($"[{Name}] Applying error filter. Total errors parsed: {errorTable.Rows.Count}, Allowed IDs loaded: {allowedErrorIds.Count}");
             var (filteredTable, matched, skipped) = ApplyErrorFilter(errorTable, allowedErrorIds);
 
-            _logger.LogEvent($"[{Name}] ErrorFilter Result for {Path.GetFileName(filePath)}: Total={errorTable.Rows.Count}, Matched={matched}, Skipped={skipped}");
+            _logger.LogEvent($"[{Name}] ErrorFilter Result for '{Path.GetFileName(filePath)}': Total={errorTable.Rows.Count}, Matched={matched}, Skipped={skipped}");
 
             if (filteredTable.Rows.Count > 0)
             {
@@ -90,7 +108,7 @@ namespace Onto_ErrorDataLib
             }
             else
             {
-                _logger.LogEvent($"[{Name}] No rows to upload after filtering for plg_error.");
+                _logger.LogEvent($"[{Name}] No rows to upload to 'plg_error' after filtering.");
             }
         }
 
@@ -117,6 +135,7 @@ namespace Onto_ErrorDataLib
                 DateTime.TryParseExact(dateStr, "M/d/yyyy H:m:s", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTime parsedDate))
             {
                 meta["DATE"] = parsedDate.ToString("yyyy-MM-dd HH:mm:ss");
+                _logger.LogDebug($"[{Name}] Metadata 'DATE' parsed and reformatted to '{meta["DATE"]}'.");
             }
             return meta;
         }
@@ -163,12 +182,12 @@ namespace Onto_ErrorDataLib
             });
 
             var regex = new Regex(@"^(?<id>\w+),\s*(?<ts>[^,]+),\s*(?<lbl>[^,]+),\s*(?<desc>[^,]+),\s*(?<ms>\d+)(?:,\s*(?<extra>.*))?", RegexOptions.Compiled);
-
+            int validRows = 0;
             foreach (var line in lines)
             {
                 var m = regex.Match(line);
                 if (!m.Success) continue;
-
+                validRows++;
                 var dr = dt.NewRow();
                 dr["eqpid"] = eqpid;
                 dr["error_id"] = m.Groups["id"].Value.Trim();
@@ -179,15 +198,22 @@ namespace Onto_ErrorDataLib
                     var kstTime = _timeSync.ToSynchronizedKst(parsedTs);
                     dr["serv_ts"] = new DateTime(kstTime.Year, kstTime.Month, kstTime.Day, kstTime.Hour, kstTime.Minute, kstTime.Second);
                 }
+                else
+                {
+                    _logger.LogDebug($"[{Name}] Could not parse timestamp '{m.Groups["ts"].Value.Trim()}' for error_id '{dr["error_id"]}'.");
+                    dr["time_stamp"] = DBNull.Value;
+                    dr["serv_ts"] = DBNull.Value;
+                }
 
                 dr["error_label"] = m.Groups["lbl"].Value.Trim();
                 dr["error_desc"] = m.Groups["desc"].Value.Trim();
-                if (int.TryParse(m.Groups["ms"].Value, out int ms)) dr["millisecond"] = ms;
+                if (int.TryParse(m.Groups["ms"].Value, out int ms)) dr["millisecond"] = ms; else dr["millisecond"] = DBNull.Value;
                 dr["extra_message_1"] = m.Groups["extra"].Value.Trim();
                 dr["extra_message_2"] = "";
 
                 dt.Rows.Add(dr);
             }
+            _logger.LogDebug($"[{Name}] Found {validRows} lines matching the error data format.");
             return dt;
         }
 
@@ -212,6 +238,7 @@ namespace Onto_ErrorDataLib
                         }
                     }
                 }
+                _logger.LogDebug($"[{Name}] Loaded {set.Count} allowed error IDs from 'err_severity_map' table.");
             }
             catch (Exception ex)
             {
@@ -225,6 +252,7 @@ namespace Onto_ErrorDataLib
         {
             if (source == null || source.Rows.Count == 0 || allowSet == null || allowSet.Count == 0)
             {
+                _logger.LogDebug($"[{Name}] Filtering skipped due to empty source table or empty allow set.");
                 return (source?.Clone() ?? new DataTable(), 0, source?.Rows.Count ?? 0);
             }
 
@@ -233,10 +261,11 @@ namespace Onto_ErrorDataLib
             foreach (DataRow row in source.Rows)
             {
                 string errorId = row["error_id"]?.ToString()?.Trim() ?? "";
-                if (allowSet.Any(id => id.Equals(errorId, StringComparison.OrdinalIgnoreCase)))
+                if (allowSet.Contains(errorId))
                 {
                     destination.ImportRow(row);
                     matched++;
+                    _logger.LogDebug($"[{Name}] Error ID '{errorId}' matched. Row included.");
                 }
             }
             return (destination, matched, source.Rows.Count - matched);
@@ -244,12 +273,17 @@ namespace Onto_ErrorDataLib
 
         private void UploadItmInfo(DataTable dt)
         {
-            if (dt == null || dt.Rows.Count == 0) return;
+            if (dt == null || dt.Rows.Count == 0)
+            {
+                _logger.LogDebug($"[{Name}] itm_info table is empty. Skipping upload.");
+                return;
+            }
             var row = dt.Rows[0];
             string connString = DatabaseInfo.CreateDefault().GetConnectionString();
 
             if (IsInfoUnchanged(row))
             {
+                _logger.LogDebug($"[{Name}] itm_info data for Eqpid '{row["eqpid"]}' is unchanged. Skipping update.");
                 SimpleLogger.Event("itm_info unchanged ▶ eqpid=" + (row["eqpid"] ?? ""));
                 return;
             }
@@ -285,7 +319,7 @@ namespace Onto_ErrorDataLib
                         cmd.ExecuteNonQuery();
                     }
                 }
-                _logger.LogEvent($"[{Name}] itm_info table updated for eqpid: {row["eqpid"]}");
+                _logger.LogEvent($"[{Name}] itm_info table updated successfully for eqpid: {row["eqpid"]}");
                 SimpleLogger.Event($"itm_info inserted/updated ▶ eqpid={row["eqpid"]}");
             }
             catch (Exception ex)
@@ -323,12 +357,17 @@ namespace Onto_ErrorDataLib
                     }
                 }
             }
-            catch { return false; }
+            catch (Exception ex)
+            {
+                 _logger.LogError($"[{Name}] Failed to check if itm_info is unchanged: {ex.Message}");
+                return false;
+            }
         }
 
         private void UploadDataTable(DataTable dt, string tableName)
         {
             string connString = DatabaseInfo.CreateDefault().GetConnectionString();
+            _logger.LogDebug($"[{Name}] Starting binary import of {dt.Rows.Count} rows to table '{tableName}'.");
             try
             {
                 using (var conn = new NpgsqlConnection(connString))
@@ -352,17 +391,17 @@ namespace Onto_ErrorDataLib
                         writer.Complete();
                     }
                 }
-                _logger.LogEvent($"[{Name}] Successfully uploaded {dt.Rows.Count} rows to {tableName}.");
+                _logger.LogEvent($"[{Name}] Successfully uploaded {dt.Rows.Count} rows to '{tableName}'.");
                 SimpleLogger.Event($"DB OK ▶ {dt.Rows.Count} rows to {tableName}");
             }
             catch (PostgresException pex) when (pex.SqlState == "23505")
             {
-                _logger.LogEvent($"[{Name}] Skipping duplicate entries for {tableName}.");
-                SimpleLogger.Event($"Duplicate entry skipped ▶ {tableName}");
+                _logger.LogEvent($"[{Name}] Skipped duplicate entries during bulk upload to '{tableName}'. This is expected if data overlaps.");
+                SimpleLogger.Event($"Duplicate entry skipped during bulk upload ▶ {tableName}");
             }
             catch (Exception ex)
             {
-                _logger.LogError($"[{Name}] DB upload failed for {tableName}: {ex.Message}");
+                _logger.LogError($"[{Name}] Bulk DB upload failed for '{tableName}': {ex.Message}");
                 SimpleLogger.Error($"DB FAIL ({tableName}) ▶ {ex.ToString()}");
             }
         }
@@ -399,7 +438,11 @@ namespace Onto_ErrorDataLib
                 try { return File.ReadAllText(path, enc); }
                 catch (IOException)
                 {
-                    if (sw.ElapsedMilliseconds > timeoutMs) throw new TimeoutException($"Could not read file {path} within {timeoutMs}ms.");
+                    if (sw.ElapsedMilliseconds > timeoutMs)
+                    {
+                        _logger.LogError($"[{Name}] Could not read file '{path}' within {timeoutMs}ms timeout.");
+                        throw new TimeoutException($"Could not read file {path} within {timeoutMs}ms.");
+                    }
                     Thread.Sleep(250);
                 }
             }
