@@ -37,7 +37,11 @@ namespace Onto_PrealignDataLib
             {
                 Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
             }
-            catch (InvalidOperationException) { /* 이미 등록됨 */ }
+            catch (InvalidOperationException)
+            {
+                _logger.LogDebug($"[{Name}] CodePagesEncodingProvider is already registered.");
+            }
+            _logger.LogEvent($"[{Name}] Plugin initialized. Version: {Version}");
         }
 
         public void SetDebugMode(bool isEnabled)
@@ -47,15 +51,14 @@ namespace Onto_PrealignDataLib
 
         /// <summary>
         /// 플러그인의 주 실행 로직입니다. 파일 전체를 처리합니다.
-        /// (원본의 ProcessAndUpload 역할)
         /// </summary>
         public void Execute(string filePath)
         {
-            _logger.LogEvent($"[{Name}] Processing file: {Path.GetFileName(filePath)}");
+            _logger.LogEvent($"[{Name}] Execute called for file: {Path.GetFileName(filePath)}");
 
             if (!WaitForFileReady(filePath, 10, 300))
             {
-                _logger.LogEvent($"[{Name}] SKIPPED (file locked): {Path.GetFileName(filePath)}");
+                _logger.LogEvent($"[{Name}] SKIPPED (file is locked): {Path.GetFileName(filePath)}");
                 return;
             }
 
@@ -65,7 +68,8 @@ namespace Onto_PrealignDataLib
             }
             catch (Exception ex)
             {
-                _logger.LogError($"[{Name}] Unhandled exception for {filePath}: {ex.Message}");
+                _logger.LogError($"[{Name}] An unhandled exception occurred while processing {Path.GetFileName(filePath)}: {ex.Message}");
+                _logger.LogDebug($"[{Name}] Unhandled Exception Details: {ex.ToString()}");
                 SimpleLogger.Error($"Unhandled EXCEPTION: {ex.ToString()}");
             }
         }
@@ -76,12 +80,19 @@ namespace Onto_PrealignDataLib
         private void ProcessFullFile(string filePath)
         {
             string eqpid = _settings.GetEqpid();
+            _logger.LogDebug($"[{Name}] Reading file content for: {Path.GetFileName(filePath)} with Eqpid: {eqpid}");
             string content = ReadAllTextSafe(filePath, Encoding.GetEncoding(949));
+            if (string.IsNullOrEmpty(content))
+            {
+                _logger.LogEvent($"[{Name}] File is empty, skipping processing: {Path.GetFileName(filePath)}");
+                return;
+            }
             var lines = content.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
 
             var regex = new Regex(@"Xmm\s*([-\d.]+)\s*Ymm\s*([-\d.]+)\s*Notch\s*([-\d.]+)\s*Time\s*([\d\-:\s]+)", RegexOptions.IgnoreCase);
             var rows = new List<(decimal x, decimal y, decimal notch, DateTime timestamp)>();
-
+            
+            _logger.LogDebug($"[{Name}] Parsing {lines.Length} lines with regex.");
             foreach (var line in lines)
             {
                 Match m = regex.Match(line);
@@ -92,17 +103,23 @@ namespace Onto_PrealignDataLib
                     decimal.TryParse(m.Groups[2].Value, out decimal y) &&
                     decimal.TryParse(m.Groups[3].Value, out decimal n))
                 {
+                    _logger.LogDebug($"[{Name}] Parsed row: X={x}, Y={y}, Notch={n}, Time={ts:s}");
                     rows.Add((x, y, n, ts));
+                }
+                else
+                {
+                    _logger.LogDebug($"[{Name}] Failed to parse values from line: '{line}'");
                 }
             }
 
             if (rows.Count > 0)
             {
+                _logger.LogDebug($"[{Name}] Successfully parsed {rows.Count} data rows. Proceeding to DB insertion.");
                 InsertRows(rows, eqpid);
             }
             else
             {
-                _logger.LogEvent($"[{Name}] No valid data rows found in {Path.GetFileName(filePath)}.");
+                _logger.LogEvent($"[{Name}] No valid data rows found in {Path.GetFileName(filePath)}. Nothing to upload.");
             }
         }
 
@@ -125,7 +142,8 @@ namespace Onto_PrealignDataLib
                 var servTsWithoutMs = new DateTime(kstTime.Year, kstTime.Month, kstTime.Day, kstTime.Hour, kstTime.Minute, kstTime.Second);
                 dt.Rows.Add(eqpid, row.timestamp, row.x, row.y, row.notch, servTsWithoutMs);
             }
-
+            
+            _logger.LogDebug($"[{Name}] Built DataTable with {dt.Rows.Count} rows for DB upload.");
             UploadDataTable(dt, "plg_prealign");
         }
 
@@ -134,11 +152,13 @@ namespace Onto_PrealignDataLib
         private void UploadDataTable(DataTable dt, string tableName)
         {
             string connString = DatabaseInfo.CreateDefault().GetConnectionString();
+            _logger.LogDebug($"[{Name}] Starting DB upload of {dt.Rows.Count} rows to table '{tableName}'.");
             try
             {
                 using (var conn = new NpgsqlConnection(connString))
                 {
                     conn.Open();
+                    _logger.LogDebug($"[{Name}] Database connection opened.");
                     using (var tx = conn.BeginTransaction())
                     {
                         var allColumns = dt.Columns.Cast<DataColumn>().Select(c => c.ColumnName).ToArray();
@@ -159,14 +179,15 @@ namespace Onto_PrealignDataLib
                             }
                         }
                         tx.Commit();
-                        _logger.LogEvent($"[{Name}] Successfully uploaded {successCount} of {dt.Rows.Count} rows to {tableName}.");
+                        _logger.LogEvent($"[{Name}] Successfully uploaded {successCount} of {dt.Rows.Count} rows to '{tableName}'.");
                         SimpleLogger.Event($"DB OK ▶ {successCount} rows to {tableName}");
                     }
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError($"[{Name}] DB upload failed for {tableName}: {ex.Message}");
+                _logger.LogError($"[{Name}] DB upload failed for '{tableName}': {ex.Message}");
+                _logger.LogDebug($"[{Name}] DB upload exception details: {ex.ToString()}");
                 SimpleLogger.Error($"DB FAIL ({tableName}) ▶ {ex.ToString()}");
             }
         }
@@ -184,14 +205,20 @@ namespace Onto_PrealignDataLib
 
         private bool WaitForFileReady(string path, int maxRetries, int delayMs)
         {
+            _logger.LogDebug($"[{Name}] Waiting for file to be ready: '{Path.GetFileName(path)}'");
             for (int i = 0; i < maxRetries; i++)
             {
                 try
                 {
-                    using (File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)) { return true; }
+                    using (File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    {
+                        _logger.LogDebug($"[{Name}] File is ready after {i + 1} attempt(s).");
+                        return true;
+                    }
                 }
                 catch (IOException) { Thread.Sleep(delayMs); }
             }
+            _logger.LogDebug($"[{Name}] File was not ready after {maxRetries} retries.");
             return false;
         }
 
@@ -203,7 +230,11 @@ namespace Onto_PrealignDataLib
                 try { return File.ReadAllText(path, enc); }
                 catch (IOException)
                 {
-                    if (sw.ElapsedMilliseconds > timeoutMs) throw new TimeoutException($"Could not read file {path} within {timeoutMs}ms.");
+                    if (sw.ElapsedMilliseconds > timeoutMs)
+                    {
+                        _logger.LogError($"[{Name}] Could not read file '{path}' within {timeoutMs}ms timeout.");
+                        throw new TimeoutException($"Could not read file {path} within {timeoutMs}ms.");
+                    }
                     Thread.Sleep(250);
                 }
             }
