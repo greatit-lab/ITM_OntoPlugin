@@ -38,7 +38,11 @@ namespace Onto_WaferFlatDataLib
             {
                 Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
             }
-            catch (InvalidOperationException) { /* 이미 등록된 경우 무시 */ }
+            catch (InvalidOperationException)
+            {
+                _logger.LogDebug($"[{Name}] CodePagesEncodingProvider is already registered.");
+            }
+            _logger.LogEvent($"[{Name}] Plugin initialized. Version: {Version}");
         }
 
         public void SetDebugMode(bool isEnabled)
@@ -48,11 +52,11 @@ namespace Onto_WaferFlatDataLib
 
         public void Execute(string filePath)
         {
-            _logger.LogEvent($"[{Name}] Processing file: {Path.GetFileName(filePath)}");
+            _logger.LogEvent($"[{Name}] Execute called for file: {Path.GetFileName(filePath)}");
 
             if (!WaitForFileReady(filePath, 20, 500))
             {
-                _logger.LogEvent($"[{Name}] SKIPPED (file locked): {Path.GetFileName(filePath)}");
+                _logger.LogEvent($"[{Name}] SKIPPED (file is locked): {Path.GetFileName(filePath)}");
                 return;
             }
 
@@ -62,7 +66,8 @@ namespace Onto_WaferFlatDataLib
             }
             catch (Exception ex)
             {
-                _logger.LogError($"[{Name}] Unhandled exception for {filePath}: {ex.Message}");
+                _logger.LogError($"[{Name}] An unhandled exception occurred while processing {Path.GetFileName(filePath)}: {ex.Message}");
+                _logger.LogDebug($"[{Name}] Unhandled Exception Details: {ex.ToString()}");
                 SimpleLogger.Error($"Unhandled EXCEPTION: {ex.ToString()}");
             }
         }
@@ -70,36 +75,48 @@ namespace Onto_WaferFlatDataLib
         private void ProcessFile(string filePath)
         {
             string eqpid = _settings.GetEqpid();
+            _logger.LogDebug($"[{Name}] Reading file content for: {Path.GetFileName(filePath)} with Eqpid: {eqpid}");
             string fileContent = ReadAllTextSafe(filePath, Encoding.GetEncoding(949));
+            if (string.IsNullOrEmpty(fileContent))
+            {
+                _logger.LogEvent($"[{Name}] File is empty, skipping processing: {Path.GetFileName(filePath)}");
+                return;
+            }
             var lines = fileContent.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
 
+            _logger.LogDebug($"[{Name}] Parsing metadata from {lines.Length} lines.");
             var meta = ParseMetadata(lines);
             var (waferNo, dateTime) = ExtractPrimaryMeta(meta);
 
+            _logger.LogDebug($"[{Name}] Searching for data header index.");
             int headerIndex = FindHeaderIndex(lines);
             if (headerIndex == -1)
             {
-                _logger.LogError($"[{Name}] Header not found in {Path.GetFileName(filePath)}. Skipping.");
+                _logger.LogError($"[{Name}] Header row starting with 'Point#' not found in '{Path.GetFileName(filePath)}'. Skipping file.");
                 return;
             }
+            _logger.LogDebug($"[{Name}] Header found at line index {headerIndex}.");
 
             var rows = ParseDataRows(lines, headerIndex, meta, waferNo, dateTime);
             if (rows.Count == 0)
             {
-                _logger.LogEvent($"[{Name}] No data rows parsed from {Path.GetFileName(filePath)}. Skipping.");
+                _logger.LogEvent($"[{Name}] No valid data rows were parsed from '{Path.GetFileName(filePath)}'. Skipping DB upload.");
                 return;
             }
+             _logger.LogDebug($"[{Name}] Successfully parsed {rows.Count} data rows. Building DataTable.");
 
             var dataTable = BuildDataTable(rows, eqpid);
             UploadToDatabase(dataTable, Path.GetFileName(filePath));
 
             try
             {
+                _logger.LogDebug($"[{Name}] Deleting processed file: {filePath}");
                 File.Delete(filePath);
+                _logger.LogEvent($"[{Name}] Successfully deleted processed file: {Path.GetFileName(filePath)}");
             }
             catch (Exception ex)
             {
-                _logger.LogError($"[{Name}] Failed to delete processed file {filePath}: {ex.Message}");
+                _logger.LogError($"[{Name}] Failed to delete processed file '{filePath}': {ex.Message}");
             }
         }
 
@@ -115,7 +132,11 @@ namespace Onto_WaferFlatDataLib
                 {
                     string key = ln.Substring(0, idx).Trim();
                     string val = ln.Substring(idx + 1).Trim();
-                    if (!meta.ContainsKey(key)) meta[key] = val;
+                    if (!meta.ContainsKey(key))
+                    {
+                        meta[key] = val;
+                        _logger.LogDebug($"[{Name}] Parsed metadata: '{key}' = '{val}'");
+                    }
                 }
             }
             return meta;
@@ -133,6 +154,7 @@ namespace Onto_WaferFlatDataLib
                 }
             }
             DateTime.TryParse(meta.GetValueOrDefault("Date and Time"), CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTime dtVal);
+            _logger.LogDebug($"[{Name}] Extracted primary metadata: WaferNo='{waferNo}', DateTime='{dtVal:s}'");
             return (waferNo, dtVal);
         }
 
@@ -156,8 +178,9 @@ namespace Onto_WaferFlatDataLib
             }
 
             var headers = lines[headerIndex].Split(',').Select(NormalizeHeader).ToList();
+            _logger.LogDebug($"[{Name}] Normalized headers: {string.Join(", ", headers)}");
             var headerMap = headers.Select((h, i) => new { h, i }).GroupBy(x => x.h).ToDictionary(g => g.Key, g => g.First().i);
-            
+
             var rows = new List<Dictionary<string, object>>();
             var intCols = new HashSet<string> { "point", "dierow", "diecol", "dienum", "diepointtag" };
 
@@ -165,7 +188,11 @@ namespace Onto_WaferFlatDataLib
             {
                 if (string.IsNullOrWhiteSpace(lines[i])) continue;
                 var values = lines[i].Split(',').Select(v => v.Trim()).ToArray();
-                if (values.Length < headers.Count) continue;
+                if (values.Length < headers.Count)
+                {
+                    _logger.LogDebug($"[{Name}] Skipping line {i+1} due to insufficient column count ({values.Length}/{headers.Count}).");
+                    continue;
+                }
 
                 var row = new Dictionary<string, object>
                 {
@@ -211,6 +238,7 @@ namespace Onto_WaferFlatDataLib
             var allKeys = rows.SelectMany(r => r.Keys).Distinct().ToList();
             foreach (var key in allKeys)
             {
+                // DB 테이블 컬럼과 이름/타입을 맞추는 것이 중요
                 dt.Columns.Add(key, typeof(object));
             }
             dt.Columns.Add("eqpid", typeof(string));
@@ -232,6 +260,7 @@ namespace Onto_WaferFlatDataLib
         {
             if (dt.Rows.Count == 0) return;
 
+            // 서버 시간(serv_ts) 컬럼 추가 및 값 계산
             if (!dt.Columns.Contains("serv_ts"))
                 dt.Columns.Add("serv_ts", typeof(DateTime));
 
@@ -249,9 +278,11 @@ namespace Onto_WaferFlatDataLib
             }
 
             string connString = DatabaseInfo.CreateDefault().GetConnectionString();
+            _logger.LogDebug($"[{Name}] Starting DB upload of {dt.Rows.Count} rows from '{sourceFileName}' to 'plg_wf_flat'.");
             using (var conn = new NpgsqlConnection(connString))
             {
                 conn.Open();
+                _logger.LogDebug($"[{Name}] Database connection opened.");
                 using (var tx = conn.BeginTransaction())
                 {
                     var allColumns = dt.Columns.Cast<DataColumn>().Select(c => c.ColumnName).ToArray();
@@ -262,25 +293,26 @@ namespace Onto_WaferFlatDataLib
                     try
                     {
                         int successCount = 0;
-                        foreach (DataRow row in dt.Rows)
+                        for(int i = 0; i < dt.Rows.Count; i++)
                         {
                             using (var cmd = new NpgsqlCommand(sql, conn, tx))
                             {
                                 foreach (var colName in allColumns)
                                 {
-                                    cmd.Parameters.AddWithValue("@" + colName, row[colName] ?? DBNull.Value);
+                                    cmd.Parameters.AddWithValue("@" + colName, dt.Rows[i][colName] ?? DBNull.Value);
                                 }
                                 successCount += cmd.ExecuteNonQuery();
                             }
                         }
                         tx.Commit();
-                        _logger.LogEvent($"[{Name}] Successfully uploaded {successCount} of {dt.Rows.Count} rows from {sourceFileName}.");
+                        _logger.LogEvent($"[{Name}] Successfully uploaded {successCount} of {dt.Rows.Count} rows from '{sourceFileName}'.");
                         SimpleLogger.Event($"DB OK ▶ {successCount} rows from {sourceFileName}");
                     }
                     catch (Exception ex)
                     {
                         tx.Rollback();
-                        _logger.LogError($"[{Name}] DB upload failed for {sourceFileName}: {ex.Message}");
+                        _logger.LogError($"[{Name}] DB upload failed for '{sourceFileName}': {ex.Message}");
+                        _logger.LogDebug($"[{Name}] DB upload exception details: {ex.ToString()}");
                         SimpleLogger.Error($"DB FAIL ▶ {ex.ToString()}");
                     }
                 }
@@ -308,7 +340,11 @@ namespace Onto_WaferFlatDataLib
                 try { return File.ReadAllText(path, enc); }
                 catch (IOException)
                 {
-                    if (sw.ElapsedMilliseconds > timeoutMs) throw new TimeoutException($"Could not read file {path} within {timeoutMs}ms.");
+                    if (sw.ElapsedMilliseconds > timeoutMs)
+                    {
+                        _logger.LogError($"[{Name}] Could not read file '{path}' within {timeoutMs}ms timeout.");
+                        throw new TimeoutException($"Could not read file {path} within {timeoutMs}ms.");
+                    }
                     Thread.Sleep(250);
                 }
             }
@@ -345,7 +381,7 @@ namespace Onto_WaferFlatDataLib
             if (_debugEnabled) Write("debug", msg);
         }
     }
-    
+
     public static class DictionaryExtensions
     {
         public static TValue GetValueOrDefault<TKey, TValue>(this IDictionary<TKey, TValue> dict, TKey key)
