@@ -359,7 +359,7 @@ namespace Onto_ErrorDataLib
             }
             catch (Exception ex)
             {
-                 _logger.LogError($"[{Name}] Failed to check if itm_info is unchanged: {ex.Message}");
+                _logger.LogError($"[{Name}] Failed to check if itm_info is unchanged: {ex.Message}");
                 return false;
             }
         }
